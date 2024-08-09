@@ -36,10 +36,10 @@ import skimage.morphology
 import cv2
 
 #ROS
-# import rospy
-# from geometry_msgs.msg import Twist
-# from sensor_msgs.msg import Image
-# import cv2
+import rospy
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import Image
+import cv2
 from cv_bridge import CvBridge
 from agents.llm import LLM
 from vl_prompt.p_manager import object_query_constructor
@@ -138,8 +138,9 @@ class OpenFMNav:
         self.map_resolution = 5
 
         self.bridge = CvBridge()
-        # self.obs_sub = rospy.Subscriber("/camera/rgb/image_raw", Image, self.obs_callback)
-        # self.depth_sub = rospy.Subscriber("/camera/rgb/image_raw", Image, self.depth_callback)
+        self.obs_sub = rospy.Subscriber("/camera/rgb/image_raw", Image, self.obs_callback)
+        self.depth_sub = rospy.Subscriber("/camera/rgb/image_raw", Image, self.depth_callback)
+        self.vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         self.xc = 310
         self.yc = 321
 
@@ -192,36 +193,75 @@ class OpenFMNav:
         self.full_w, self.full_h = map_size, map_size # 2400/5=480
         self.full_map = torch.zeros(self.full_w, self.full_h).float()
         self.done = False
+
+        # planning 
+        # target object pose on CAMERA coordinate
+        self.x_obj = {}
+        self.z_obj = {}
+
+        # confidence value 0--1. 
+        self.conf_value = 1.0
+        self.control_rate = 10
+        self.lattice_mse = torch.nn.MSELoss(size_average=False)
+
+        #defining motion premitive(velocity commands)
+        self.vel_00_00 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.vel_05_00 = [0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0]
+        self.vel_05_p03 = [0.5, 0.3, 0.5, 0.3, 0.5, 0.3, 0.5, 0.3, 0.5, 0.3, 0.5, 0.3, 0.5, 0.3, 0.5, 0.3]
+        self.vel_05_p06 = [0.5, 0.6, 0.5, 0.6, 0.5, 0.6, 0.5, 0.6, 0.5, 0.6, 0.5, 0.6, 0.5, 0.6, 0.5, 0.6]
+        self.vel_05_p09 = [0.5, 0.9, 0.5, 0.9, 0.5, 0.9, 0.5, 0.9, 0.5, 0.9, 0.5, 0.9, 0.5, 0.9, 0.5, 0.9]
+        self.vel_05_m03 = [0.5, -0.3, 0.5, -0.3, 0.5, -0.3, 0.5, -0.3, 0.5, -0.3, 0.5, -0.3, 0.5, -0.3, 0.5, -0.3]
+        self.vel_05_m06 = [0.5, -0.6, 0.5, -0.6, 0.5, -0.6, 0.5, -0.6, 0.5, -0.6, 0.5, -0.6, 0.5, -0.6, 0.5, -0.6]
+        self.vel_05_m09 = [0.5, -0.9, 0.5, -0.9, 0.5, -0.9, 0.5, -0.9, 0.5, -0.9, 0.5, -0.9, 0.5, -0.9, 0.5, -0.9]
+        self.vel_02_00 = [0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0]
+        self.vel_02_p03 = [0.2, 0.3, 0.2, 0.3, 0.2, 0.3, 0.2, 0.3, 0.2, 0.3, 0.2, 0.3, 0.2, 0.3, 0.2, 0.3]
+        self.vel_02_p06 = [0.2, 0.6, 0.2, 0.6, 0.2, 0.6, 0.2, 0.6, 0.2, 0.6, 0.2, 0.6, 0.2, 0.6, 0.2, 0.6]
+        self.vel_02_p09 = [0.2, 0.9, 0.2, 0.9, 0.2, 0.9, 0.2, 0.9, 0.2, 0.9, 0.2, 0.9, 0.2, 0.9, 0.2, 0.9]
+        self.vel_02_m03 = [0.2, -0.3, 0.2, -0.3, 0.2, -0.3, 0.2, -0.3, 0.2, -0.3, 0.2, -0.3, 0.2, -0.3, 0.2, -0.3]
+        self.vel_02_m06 = [0.2, -0.6, 0.2, -0.6, 0.2, -0.6, 0.2, -0.6, 0.2, -0.6, 0.2, -0.6, 0.2, -0.6, 0.2, -0.6]
+        self.vel_02_m09 = [0.2, -0.9, 0.2, -0.9, 0.2, -0.9, 0.2, -0.9, 0.2, -0.9, 0.2, -0.9, 0.2, -0.9, 0.2, -0.9]
+
+        self.vel_prem = torch.Tensor([self.vel_00_00, self.vel_05_00, self.vel_05_p03, self.vel_05_p06, self.vel_05_p09, self.vel_05_m03, self.vel_05_m06, self.vel_05_m09, self.vel_02_00, self.vel_02_p03, self.vel_02_p06, self.vel_02_p09, self.vel_02_m03, self.vel_02_m06, self.vel_02_m09]).float().to("cuda")
+        bvp, _ = self.vel_prem.size()
+
+        #from velocity to pose (This is on the CAMERA coordinate. Sorry.)
+        self.p_torch, self.px_torch, self.pz_torch = self.twists_to_poses_mat_torch(self.vel_prem)  
+
+        #defined motion primitive, Tprem is matrix, pz_torch_cat is vector, px_torch_cat is vector
+        self.Tprem = torch.cat(self.p_torch, axis=1)
+        self.pz_torch_cat = torch.cat(self.pz_torch, axis=1).clone()
+        self.px_torch_cat = torch.cat(self.px_torch, axis=1).clone()
     
+    # def preprocess_image(self, msg):
+    #     ## image preprocess for Ricoh THETA S
+    #     cv2_msg_img = self.bridge.imgmsg_to_cv2(msg)
+    #     pil_msg_img = cv2.cvtColor(cv2_msg_img, cv2.COLOR_BGR2RGB)
+    #     pil_msg_imgx = Image.fromarray(pil_msg_img)
+
+    #     fg_img = Image.new('RGBA', pil_msg_imgx.size, (0, 0, 0, 255))    
+    #     draw = ImageDraw.Draw(fg_img)
+    #     draw.ellipse(self.XYf, fill = (0, 0, 0, 0))
+    #     draw.ellipse(self.XYb, fill = (0, 0, 0, 0))
+
+    #     pil_msg_imgx.paste(fg_img, (0, 0), fg_img.split()[3])
+    #     cv2_img = cv2.cvtColor(pil_msg_img, cv2.COLOR_RGB2BGR)
+
+    #     cv_cutimg_F = cv2_img[self.yc-self.xyoffset:self.yc+self.xyoffset, self.xc-self.xyoffset:self.xc+self.xyoffset]
+    #     cv_cutimg_B = cv2_img[self.yc-self.xyoffset:self.yc+self.xyoffset, self.xc+self.xplus-self.xyoffset:self.xc+self.xplus+self.xyoffset]
+
+    #     cv_cutimg_FF = cv2.transpose(cv_cutimg_F)
+    #     cv_cutimg_F = cv2.flip(cv_cutimg_FF, 1)
+    #     cv_cutimg_Bt = cv2.transpose(cv_cutimg_B)
+    #     cv_cutimg_B = cv2.flip(cv_cutimg_Bt, 0)
+    #     cv_cutimg_BF = cv2.flip(cv_cutimg_Bt, -1)
+
+    #     cv_cutimg_n = np.concatenate((cv_cutimg_F, cv_cutimg_B), axis=1)
+    #     return cv_cutimg_n
+
     def preprocess_image(self, msg):
         ## image preprocess for Ricoh THETA S
-        cv2_msg_img = self.bridge.imgmsg_to_cv2(msg)
-        pil_msg_img = cv2.cvtColor(cv2_msg_img, cv2.COLOR_BGR2RGB)
-        pil_msg_imgx = Image.fromarray(pil_msg_img)
-
-        fg_img = Image.new('RGBA', pil_msg_imgx.size, (0, 0, 0, 255))    
-        draw = ImageDraw.Draw(fg_img)
-        draw.ellipse(self.XYf, fill = (0, 0, 0, 0))
-        draw.ellipse(self.XYb, fill = (0, 0, 0, 0))
-
-        pil_msg_imgx.paste(fg_img, (0, 0), fg_img.split()[3])
-        cv2_img = cv2.cvtColor(pil_msg_img, cv2.COLOR_RGB2BGR)
-
-        cv_cutimg_F = cv2_img[self.yc-self.xyoffset:self.yc+self.xyoffset, self.xc-self.xyoffset:self.xc+self.xyoffset]
-        cv_cutimg_B = cv2_img[self.yc-self.xyoffset:self.yc+self.xyoffset, self.xc+self.xplus-self.xyoffset:self.xc+self.xplus+self.xyoffset]
-
-        cv_cutimg_FF = cv2.transpose(cv_cutimg_F)
-        cv_cutimg_F = cv2.flip(cv_cutimg_FF, 1)
-        cv_cutimg_Bt = cv2.transpose(cv_cutimg_B)
-        cv_cutimg_B = cv2.flip(cv_cutimg_Bt, 0)
-        cv_cutimg_BF = cv2.flip(cv_cutimg_Bt, -1)
-
-        cv_cutimg_n = np.concatenate((cv_cutimg_F, cv_cutimg_B), axis=1)
-        return cv_cutimg_n
-
-    def preprocess_image_pil(self, pil_img):
-        ## image preprocess for Ricoh THETA S
-        pil_msg_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_BGR2RGB)
+        pil_img = self.bridge.imgmsg_to_cv2(msg)
+        pil_msg_img = cv2.cvtColor(pil_img, cv2.COLOR_BGR2RGB)
         pil_msg_img = cv2.resize(pil_msg_img, (1280, 640))
         pil_msg_imgx = Image.fromarray(pil_msg_img)
 
@@ -257,8 +297,8 @@ class OpenFMNav:
     def obs_callback(self, msg):
         self.obs_img = self.preprocess_image(msg)
 
-    def get_depth(self, img):
-        img = self.preprocess_image_pil(img)
+    def depth_callback(self, msg):
+        img = self.preprocess_image(msg)
         cv_trans = img.transpose(2, 0, 1)
         cv_trans_np = np.array([cv_trans], dtype=np.float32)
             
@@ -397,6 +437,37 @@ class OpenFMNav:
 
         return self.goal_pose
 
+    def state_lattice_callback(self, x_obj, z_obj, conf_value):    
+        if x_obj != {} and z_obj != {} and conf_value != {}:   
+    
+            bsl, lsl, _, _ = self.Tprem.size()
+            px_torch_split = torch.split(self.px_torch_cat, 1, dim=1)
+            pz_torch_split = torch.split(self.pz_torch_cat, 1, dim=1)   
+            px_split_cat = torch.cat(px_torch_split, dim=0).squeeze(1)
+            pz_split_cat = torch.cat(pz_torch_split, dim=0).squeeze(1)                
+        
+            eval_lattice = torch.mean((x_obj.unsqueeze(0).repeat(bsl*lsl, 1)-px_split_cat.unsqueeze(1))**2, dim=(1)) + torch.mean((z_obj.unsqueeze(0).repeat(bsl*lsl, 1)-pz_split_cat.unsqueeze(1))**2, dim=(1)) 
+            metric = eval_lattice
+            #metric = eval_lattice + 1000.0*collision_judge + 1000.0 * eval_ped * no_ped
+                    
+            #selecting closest one       
+            id_min = torch.argmin(metric)
+            id_select = id_min % bsl
+        
+            if metric[id_min] < 999 and conf_value > 0.0:
+                linear_vel = self.vel_prem[id_select][0].cpu().numpy()
+                angular_vel = self.vel_prem[id_select][1].cpu().numpy()
+            else:
+                linear_vel = 0.0
+                angular_vel = 0.0 
+                        
+        else:
+            linear_vel = 0.0
+            angular_vel = 0.0   
+            print("no data!")
+        
+        return linear_vel, angular_vel
+
     
     def main(self):
 
@@ -418,26 +489,29 @@ class OpenFMNav:
 
         O_dis = []
 
-        while not self.done: 
+        while not self.done and self.obs is not None and self.depth is not None: 
 
             # Get the current observation
             # obs = self.obs_img
-            obs_orig = Image.open("img/image_bike.png")
-            obs = self.preprocess_image_pil(obs_orig)
-            self.cam_points_f, self.cam_points_b, self.disp = self.get_depth(obs_orig)
-            self.disp_resized = self.disp.to("cpu").detach().numpy().squeeze()
-            self.disp_resized = cv2.resize(self.disp_resized, (obs.shape[1], obs.shape[0]))
-            self.disp_resized = np.array(self.disp_resized)
-            self.disp_resized = Image.fromarray(self.disp_resized)  
+            # obs_orig = Image.open("img/image_bike.png")
+            # obs = self.preprocess_image_pil(obs_orig)
+            # self.cam_points_f, self.cam_points_b, self.disp = self.get_depth(obs_orig)
+
+
+            # self.disp_resized = self.disp.to("cpu").detach().numpy().squeeze()
+            # self.disp_resized = cv2.resize(self.disp_resized, (obs.shape[1], obs.shape[0]))
+            # self.disp_resized = np.array(self.disp_resized)
+            # self.disp_resized = Image.fromarray(self.disp_resized)  
+
             self.depth_resized = self.depth.to("cpu").detach().numpy().squeeze()
-            self.depth_resized = cv2.resize(self.depth_resized, (obs.shape[1], obs.shape[0]))
+            self.depth_resized = cv2.resize(self.depth_resized, (self.obs.shape[1], self.obs.shape[0]))
             self.depth_resized = np.array(self.depth_resized)
             plt.imshow(self.depth_resized)
             plt.show()
 
-            obs = Image.fromarray(obs)
+            self.obs = Image.fromarray(self.obs)
             # Discover what is in the observation
-            O_dis_new = self.lm.discover_objects(obs, O_dis)
+            O_dis_new = self.lm.discover_objects(self.obs, O_dis)
             
             print("New discovered objects: ", O_dis_new)
             O_dis.append(O_dis_new)
@@ -454,22 +528,39 @@ class OpenFMNav:
             self.gsam = GSAM(O_group, text_threshold=0.55, device=self.device)
 
             # Predict objects from the observation 
-            sam_semantic_pred = self.gsam.predict(obs)
+            sam_semantic_pred = self.gsam.predict(self.obs)
             # See in target object in sam prediction
             masks = sam_semantic_pred[0]
             for i in range(len(O_group)):
-                if masks[:,:,].max() > 0:
-                    print("Target object found: ", O_pri[i])
-                    print(sam_semantic_pred[2][i])
-                    goal = O_pri[i]
-                    goal_mask = masks[i]
-                    bbox = sam_semantic_pred[1][i]
-                    break
-                else: 
-                    print("Target object not found")
+                label = sam_semantic_pred[2][i].split("(")[0]
+                if label in O_pri:
+                    if masks[:,:,].max() > 0:
+                        print("Target object found: ", O_pri[i])
+                        print(sam_semantic_pred[2][i])
+                        goal = O_pri[i]
+                        goal_mask = masks[i]
+                        bbox = sam_semantic_pred[1][i]
+                        break
+                    else: 
+                        print("Target object not found")
             
             # Convert mask to pose for planner 
             self.mask_to_pose(goal_mask, self.cam_points_f, self.cam_points_b, self.depth_resized)
+            reached = False
+            rate = rospy.Rate(self.control_rate)
+            while True: 
+                # Plan the path to the goal
+                linear_vel, angular_vel = self.state_lattice(self.goal_pose[0], self.goal_pose[2], self.conf_value)
+                print("Linear velocity: ", linear_vel)
+                print("Angular velocity: ", angular_vel)
+                twist = Twist()
+                twist.linear.x = linear_vel
+                twist.angular.z = angular_vel
+                self.vel_pub.publish(twist)
+                rate
+                # Move to the goal
+                # self.move_to_goal(linear_vel, angular_vel)
+                # Check if the goal has been reached
 
             # Plan the path to the goal
             print("Done!")
