@@ -1,15 +1,17 @@
 import openai
 import retry
 import requests
+import os
 from vl_prompt.p_manager import extract_integer_answer, extract_scores, extract_objects, \
     get_frontier_prompt, get_candidate_prompt, get_grouping_prompt, get_discover_prompt
 
-# should be replaced by your API key
-with open("./apikey.txt") as f:
-    # key order：temp key, long-term, mine
-    keys = f.read().split("\n")
-    openai.api_key = keys[0] # NOTE: change key before running
-
+# # should be replaced by your API key
+# with open("./apikey.txt") as f:
+#     # key order：temp key, long-term, mine
+#     keys = f.read().split("\n")
+#     openai.api_key = keys[0] # NOTE: change key before running
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+openai.organization = os.environ.get("OPENAI_ORG_ID")
 
 class LLM():
     def __init__(self, goal_name, prompt_type):

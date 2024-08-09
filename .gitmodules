@@ -1,0 +1,3 @@
+[submodule "mono_depth"]
+	path = mono_depth
+	url = https://github.com/NHirose/Monocular-depth-esatimation-in-ExAug.git

@@ -85,6 +85,7 @@ class FMMPlanner():
         dd = ma.filled(dd, np.max(dd) + 1) # 将mask的值替换为max(dd)+1, 即障碍物为最大距离
         self.fmm_dist = dd
         self.around[goal_map == 1] = 0
+
         return
 
     def get_short_term_goal(self, state):

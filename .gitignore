@@ -9,3 +9,4 @@ output_sam/
 object_category.txt
 data/
 nav_res/
+mono_depth/__pycache__/
