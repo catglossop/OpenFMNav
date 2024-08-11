@@ -78,6 +78,7 @@ class GSAM():
         self.set_text(full_cls)
     
     def predict(self, rgb):
+
         transformed_rgb, _ = self.transform_sam(rgb, None)
         boxes_filt, pred_phrases = get_grounding_output(
             self.dino_model, transformed_rgb, self.text_prompt, self.box_threshold, self.text_threshold, device=self.device
