@@ -546,13 +546,12 @@ class OpenFMNav:
                 else: 
                     print("Target object not found")
             if goal_mask is None:
-                print("target object not found")
+                print("Target object not found")
                 timestep += 1
                 continue
             # Convert mask to pose for planner 
             assert np.count_nonzero(goal_mask.cpu().detach().numpy()) != 0
             self.mask_to_pose(goal_mask, self.cam_points_f, self.cam_points_b, self.depth_resized)
-            reached = False
 
             # Plan the path to the goal
             reached = False
@@ -582,6 +581,7 @@ class OpenFMNav:
                 if timestep == self.TIMEOUT:
                     print("Done!")
                     self.done = True
+            self.done = True 
         rate.sleep()
 
 if __name__ == "__main__":
